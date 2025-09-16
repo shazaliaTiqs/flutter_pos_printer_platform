@@ -128,16 +128,10 @@ class USBPrinterService private constructor(private var mHandler: Handler?) {
 
     // REPLACE the whole openConnection() with this:
     private fun openConnection(): Boolean {
-        if (mUsbDevice == null) {
-            Log.e(LOG_TAG, "USB Device is not initialized")
-            return false
-        }
-        if (mUSBManager == null) {
-            Log.e(LOG_TAG, "USB Manager is not initialized")
-            return false
-        }
+        if (mUsbDevice == null) { Log.e(LOG_TAG, "USB Device is not initialized"); return false }
+        if (mUSBManager == null) { Log.e(LOG_TAG, "USB Manager is not initialized"); return false }
 
-        // Already connected with endpoint? keep it
+        // already good?
         if (mUsbDeviceConnection != null && mEndPoint != null) {
             Log.i(LOG_TAG, "USB Connection already connected (endpoint ok)")
             return true
@@ -147,35 +141,30 @@ class USBPrinterService private constructor(private var mHandler: Handler?) {
         val manager = mUSBManager!!
 
         val connection = manager.openDevice(device)
-        if (connection == null) {
-            Log.e(LOG_TAG, "Failed to open USB Connection")
-            return false
-        }
+            ?: run { Log.e(LOG_TAG, "Failed to open USB Connection"); return false }
 
-        // Try ALL interfaces and ALL endpoints; pick BULK OUT, claim, store.
+        // Scan ALL interfaces & endpoints; accept BULK OUT or INTERRUPT OUT
         for (i in 0 until device.interfaceCount) {
             val iface = device.getInterface(i)
             for (e in 0 until iface.endpointCount) {
                 val ep = iface.getEndpoint(e)
-                if (ep.type == UsbConstants.USB_ENDPOINT_XFER_BULK &&
-                    ep.direction == UsbConstants.USB_DIR_OUT) {
+                Log.d(
+                    LOG_TAG,
+                    "iface=$i class=${iface.interfaceClass} sub=${iface.interfaceSubclass} proto=${iface.interfaceProtocol} " +
+                            "ep=${ep.address} type=${ep.type} dir=${ep.direction} mps=${ep.maxPacketSize}"
+                )
 
-                    val claimed = connection.claimInterface(iface, true)
-                    if (claimed) {
+                val isOut = ep.direction == UsbConstants.USB_DIR_OUT
+                val isWriteCapable =
+                    ep.type == UsbConstants.USB_ENDPOINT_XFER_BULK ||
+                            ep.type == UsbConstants.USB_ENDPOINT_XFER_INT
+
+                if (isOut && isWriteCapable) {
+                    if (connection.claimInterface(iface, true)) {
                         mUsbInterface = iface
                         mEndPoint = ep
                         mUsbDeviceConnection = connection
-
-                        Toast.makeText(
-                            mContext,
-                            mContext?.getString(R.string.connected_device),
-                            Toast.LENGTH_SHORT
-                        ).show()
-
-                        Log.i(
-                            LOG_TAG,
-                            "Claimed iface=$i epOut=${ep.address} mps=${ep.maxPacketSize}"
-                        )
+                        Log.i(LOG_TAG, "Claimed iface=$i epOut=${ep.address} type=${ep.type} mps=${ep.maxPacketSize}")
                         return true
                     } else {
                         Log.e(LOG_TAG, "Failed to claim interface $i")
@@ -184,14 +173,15 @@ class USBPrinterService private constructor(private var mHandler: Handler?) {
             }
         }
 
-        // No BULK OUT found → close and fail
+        // nothing found → close & fail (don’t leave nulls and say 'true')
         connection.close()
         mUsbInterface = null
         mEndPoint = null
         mUsbDeviceConnection = null
-        Log.e(LOG_TAG, "No BULK OUT endpoint found on any interface")
+        Log.e(LOG_TAG, "No BULK/INT OUT endpoint found on any interface")
         return false
     }
+
 
     // printText (guard & reuse openConnection)
     fun printText(text: String): Boolean {
@@ -236,7 +226,6 @@ class USBPrinterService private constructor(private var mHandler: Handler?) {
     // REPLACE the whole printBytes() with this:
     fun printBytes(bytes: ArrayList<Int>): Boolean {
         Log.v(LOG_TAG, "Printing bytes")
-
         val ok = openConnection()
         if (!ok || mUsbDeviceConnection == null || mEndPoint == null) {
             Log.e(LOG_TAG, "No connection or endpoint to print (aborting)")
@@ -246,21 +235,19 @@ class USBPrinterService private constructor(private var mHandler: Handler?) {
         val ep = mEndPoint!!
         val conn = mUsbDeviceConnection!!
 
-        // Guard MPS; use a sane minimum
+        // Guard MPS; use a sane minimum to avoid 0 (some INT endpoints report tiny MPS)
         val chunkSize = maxOf(16, ep.maxPacketSize)
-        Log.v(LOG_TAG, "Max Packet Size: $chunkSize")
+        Log.v(LOG_TAG, "Packet Size: $chunkSize  (epType=${ep.type})")
 
         Thread {
             synchronized(printLock) {
-                // Build byte array once
-                val out = ByteArray(bytes.size)
-                for (i in bytes.indices) out[i] = bytes[i].toByte()
-
+                val out = ByteArray(bytes.size) { i -> bytes[i].toByte() }
                 var offset = 0
                 var rc = 0
                 while (offset < out.size) {
                     val end = kotlin.math.min(offset + chunkSize, out.size)
                     val buf = java.util.Arrays.copyOfRange(out, offset, end)
+                    // bulkTransfer works with INT endpoints as well; Android routes it appropriately
                     rc = conn.bulkTransfer(ep, buf, buf.size, 100_000)
                     offset = end
                 }
@@ -269,6 +256,7 @@ class USBPrinterService private constructor(private var mHandler: Handler?) {
         }.start()
         return true
     }
+
 
     companion object {
         @SuppressLint("StaticFieldLeak")
