@@ -193,43 +193,44 @@ class USBPrinterService private constructor(private var mHandler: Handler?) {
         return false
     }
 
+    // printText (guard & reuse openConnection)
     fun printText(text: String): Boolean {
         Log.v(LOG_TAG, "Printing text")
         val isConnected = openConnection()
-        return if (isConnected) {
-            Log.v(LOG_TAG, "Connected to device")
-            Thread {
-                synchronized(printLock) {
-                    val bytes: ByteArray = text.toByteArray(Charset.forName("UTF-8"))
-                    val b: Int = mUsbDeviceConnection!!.bulkTransfer(mEndPoint, bytes, bytes.size, 100000)
-                    Log.i(LOG_TAG, "Return code: $b")
-                }
-            }.start()
-            true
-        } else {
+        if (!isConnected || mUsbDeviceConnection == null || mEndPoint == null) {
             Log.v(LOG_TAG, "Failed to connect to device")
-            false
+            return false
         }
+        Thread {
+            synchronized(printLock) {
+                val bytes: ByteArray = text.toByteArray(Charset.forName("UTF-8"))
+                val rc = mUsbDeviceConnection!!.bulkTransfer(mEndPoint, bytes, bytes.size, 100000)
+                Log.i(LOG_TAG, "Return code: $rc")
+            }
+        }.start()
+        return true
     }
 
+    // printRawData (guard & safe)
     fun printRawData(data: String): Boolean {
-        Log.v(LOG_TAG, "Printing raw data: $data")
+        Log.v(LOG_TAG, "Printing raw data")
         val isConnected = openConnection()
-        return if (isConnected) {
-            Log.v(LOG_TAG, "Connected to device")
-            Thread {
-                synchronized(printLock) {
-                    val bytes: ByteArray = Base64.decode(data, Base64.DEFAULT)
-                    val b: Int = mUsbDeviceConnection!!.bulkTransfer(mEndPoint, bytes, bytes.size, 100000)
-                    Log.i(LOG_TAG, "Return code: $b")
-                }
-            }.start()
-            true
-        } else {
-            Log.v(LOG_TAG, "Failed to connected to device")
-            false
+        if (!isConnected || mUsbDeviceConnection == null || mEndPoint == null) {
+            Log.v(LOG_TAG, "Failed to connect to device")
+            return false
         }
+        Thread {
+            synchronized(printLock) {
+                val bytes: ByteArray = Base64.decode(data, Base64.DEFAULT)
+                val rc = mUsbDeviceConnection!!.bulkTransfer(mEndPoint, bytes, bytes.size, 100000)
+                Log.i(LOG_TAG, "Return code: $rc")
+            }
+        }.start()
+        return true
     }
+
+
+
 
 
     // REPLACE the whole printBytes() with this:
